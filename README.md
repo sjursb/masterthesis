@@ -1,5 +1,5 @@
 # Master's Thesis
-Report and files related to my Master's thesis in Industrial Mathematics submitted June 4, 2022.
+Report and files related to my Master's thesis in Industrial Mathematics submitted July 4, 2022.
 
 ## Repo Summary
 Folder tree:
@@ -19,7 +19,7 @@ masterthesis
         └── __pycache__
 ```
 
-The repo also includes a licence (MIT), `.gitignore`, `requirements.txt` and `environment.yml`
+The repo also includes a licence (MIT), `.gitignore`, `requirements.txt` and `environment.yml`.
 ### processed_data
 - some raw data on Butcher tables
 - convergence data, which was computed on an external server
