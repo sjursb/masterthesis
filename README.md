@@ -19,7 +19,7 @@ masterthesis
         └── __pycache__
 ```
 
-The repo also includes a licence (MIT), `.gitignore`, `requirements.txt`
+The repo also includes a licence (MIT), `.gitignore`, `requirements.txt` and `environment.yml`
 ### processed_data
 - some raw data on Butcher tables
 - convergence data, which was computed on an external server
