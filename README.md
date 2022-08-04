@@ -40,3 +40,14 @@ The code is slightly cluttered and poorly documented at the time of submission, 
 ## Setting up code
 The `jax` package does not run on Windows. If you use a Windows computer, the environment has to be installed on a Linux subsystem (WSL).
 
+## Thesis Errata
+- pp. 52: 
+  - The starting approximations of the stage approximations should be denoted $Z_0=0$ rather than $z^0=0$
+  - In approximation of the Jacobian (step two of the IRK iteration procedure), $y_n$ should be replaced with $x_n$; that is, 
+  $$\nabla_x f(t_n + c_i \Delta t, x_n + z_i) \approx \nabla_x f(t_n, x_n) =: df_n.$$
+  - Further, on the vector field evaluations of the stage approximations: 
+  $$F(Z_i) = [f(t_n + c_1 \Delta t,\; z_0 + z_{1,i}),\; f(t_n + c_2 \Delta t,\; z_0 + z_{2,i}),\; \dots]^T.$$
+## Changes Post Submission
+- Added docstrings to classes and functions
+- Uploaded `solver.py`, which was mistakenly left out when the repository was set up (August 1)
+- Errors are noted above when found
