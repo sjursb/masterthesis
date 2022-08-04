@@ -23,10 +23,10 @@ jax.config.update("jax_enable_x64", True) # makes it possible to use float64 for
 # Standard numpy construction of truncated_wiener 
 def truncated_wiener(
         t0=0, T=1, dt=1e-1, 
-        batches=10, batch_simulations=100, seed=100,
+        batches=8, batch_simulations=125, seed=100,
         diffusion_terms=0, k=2, truncate=True
     ):
-    """truncated_wiener Simulate Wiener Process with truncations to ensure solvability
+    """truncated_wiener simulates Wiener Process increments (optionally truncated) using numpy implementation.
 
     Generates array of truncated variables sampled from a normal distribution with each element a ~ N(0, dt).
     The dimension of the array is (timesteps, batches, batch_simulations, diffusion_terms), where
@@ -39,7 +39,8 @@ def truncated_wiener(
     
     and the random number generator used is PCG64 (default in numpy as of 2022).
     
-    The truncation is based on Stochastic Numerics in Mathematical Physics by Milstein & Tretyakov.
+    The truncation is based on Stochastic Numerics in Mathematical Physics by Milstein & Tretyakov,
+    where any increment absolutely larger is replaced by A_h with the same sign.
 
     Parameters
     ----------
@@ -50,9 +51,9 @@ def truncated_wiener(
     dt : float, optional
         stepsize, by default 1e-1
     batches : int, optional
-        Number of simulated batches, by default 10
+        Number of simulated batches, by default 8
     batch_simulations : int, optional
-        Number of simulated Wiener Processes in each batch, by default 100
+        Number of simulated Wiener Processes in each batch, by default 125
     seed : int, optional
         Random generator seed, by default 100
     diffusion_terms : int, optional
@@ -65,7 +66,7 @@ def truncated_wiener(
     Returns
     -------
     dW : np.ndarray
-        simulated Wiener increments, possibly truncated
+        simulated Wiener Proces increments, possibly truncated
     """
     # Initialize empty array
     timesteps = int((T-t0)/dt)
@@ -90,13 +91,58 @@ def truncated_wiener(
 # jax construction of truncated wiener simulation (redundant, but illustrative of differing syntax)
 @jit
 def truncate_wiener(dW:jnp.ndarray, k:int, dt:jnp.float64):
-    """Truncate supplied Wiener process using jax functions"""
+    """
+    truncate_wiener truncates supplied array using jax functions
+
+    The truncation essentially works the same way as in truncated_wiener,
+    with any values absolutely larger than A_h, given by the formula
+    
+    A_h = sqrt(2 * k * |log(dt)|)
+
+    replaced by A_h with the same sign.
+
+    Parameters
+    ----------
+    dW : jnp.ndarray
+        simulated Wiener increments as DeviceArray (jax implementation of arrays)
+    k : int
+        constant in truncation bound 
+    dt : jnp.float64
+        temporal stepsize
+
+    Returns
+    -------
+    jnp.ndarray
+        truncated version of dW
+    """
     A_h = jnp.sqrt(2*k*jnp.abs(jnp.log(dt)))
     # Truncating variable
     return jnp.where(jnp.abs(dW) < A_h, dW, jnp.sign(dW) * A_h)
 
-def generate_wiener_jax(dt, seed, timesteps, batches, batch_simulations, diffusion_terms=0):
-    """Generate wiener process using jax functions."""
+def generate_wiener_jax(dt:jnp.float64, seed:int, timesteps:int, batches:int, batch_simulations:int, diffusion_terms=0):
+    """
+    generate_wiener_jax generates Wiener Process increments using jax functions.
+
+    Parameters
+    ----------
+    dt : float
+        temporal stepsize
+    seed : int
+        seed of Random Number Generator
+    timesteps : int
+        number of timesteps over which a Wiener Process is simulated
+    batches : int
+        number of simulation batches
+    batch_simulations : int
+        number of simulations in each batch
+    diffusion_terms : int, optional
+        dimension of the Wiener Process (zero for scalar Wiener Process), by default 0
+
+    Returns
+    -------
+    jnp.array
+        simulated Wiener Process increments array 
+    """
     noise_shape = [timesteps, batches, batch_simulations]
     if diffusion_terms: noise_shape.append(diffusion_terms)
     key = jax.random.PRNGKey(seed)
@@ -105,9 +151,37 @@ def generate_wiener_jax(dt, seed, timesteps, batches, batch_simulations, diffusi
 
 def truncated_wiener_jax(
         t0=jnp.float64(0), T=jnp.float64(1), dt=jnp.float64(1e-1), 
-        batches=20, batch_simulations=1000, seed=100, 
+        batches=8, batch_simulations=125, seed=100, 
         diffusion_terms=0, k=2, truncate=True):
-    """Jax version of truncated_wiener anologous to truncated_wiener."""
+    """
+    truncated_wiener_jax is anologous to truncated_wiener, but uses jax functions internally.
+
+    Parameters
+    ----------
+    t0 : jnp.float64, optional
+        initial time, by default jnp.float64(0)
+    T : jnp.float64, optional
+        terminal time, by default jnp.float64(1)
+    dt : jnp.float64, optional
+        steplength, by default jnp.float64(1e-1)
+    batches : int, optional
+        number of batches of simulations, by default 8
+    batch_simulations : int, optional
+        number of simulations in each batch, by default 125
+    seed : int, optional
+        seed of Random Number Generator, by default 100
+    diffusion_terms : int, optional
+        dimension of simulated Wiener Process (zero for scalar processes), by default 0
+    k : int, optional
+        constant in truncation bound, by default 2
+    truncate : bool, optional
+        whether to truncate the simulateed Wiener Increments, by default True
+
+    Returns
+    -------
+    jnp.array
+        simulated Wiener Process increment, possibly truncated
+    """
     
     timesteps = int((T-t0)/dt)
     dW = generate_wiener_jax(dt, seed, timesteps, batches, batch_simulations, diffusion_terms=diffusion_terms)
@@ -118,46 +192,101 @@ def truncated_wiener_jax(
 # Support sizes for the jaxed irk_sde_sovler
 
 class RK1():
-        """Temporary class which stores A, b, and c from RK_butcher as jnp.ndarrays (param class only allows for np.array for standard parameters)."""
+        """Temporary class which stores A, b, and c from RK_butcher as jnp.ndarrays (param class in rk_builder only allows for np.array for standard parameters)."""
         def __init__(self, rk:RK):
             self.A = jnp.float64(rk.A)
             self.b = jnp.float64(rk.b)
             self.c = jnp.float64(rk.c)
 
-def F(Y, y0, f:callable):
-    """f applied to the approximations of x_new, i.e. y0 + y, for all stages of the IRK method"""
-    return jax.vmap(lambda y: f(y0 + y))(Y)
-    
-def calc_gamma(y0, dm, I_d, A, df:callable):
-    "Left-hand side of the Newton iterations"
-    return I_d - dm * jnp.kron(A, df(y0))
-
-def G(Y, y0, dm, A_d, F:callable):
-    "Function on the right-hand side of the Newton iterations"
-    return jnp.ravel(Y) - dm * jnp.dot(A_d, jnp.ravel(F(Y,y0)))
-
-def stop_criterion(dy_old:jnp.ndarray, dy_new:jnp.ndarray, k:int, eta_old:float, tol:float=1e-16, kappa:float=1e-4, u_round:float=1e-16):
-    """stop_criterion checks if an acceptable convergence for the Newton iterations is achieved
-
-    Follows procedure from Hairer and Wanner's "Solving ODEs II" Ch.IV.8 pp. 120-121 to calculate a stop criterion using current and former `dy`,
-    as well as a method specific tolerance level `tol` similar to the local discretization error of the method,
-    roundoff error of the computer `u_round`, iteration number `k`, an old temporary value `eta_old` and some constant `kappa`.
-
+def F(Z:jnp.ndarray, z0:jnp.ndarray, f:function):
+    """
+    F evaluates the vector field f at the approximations of x_new, i.e. f(z0 + z) for z in Z (see Thesis pp.52).
 
     Parameters
     ----------
-    dy_old : np.ndarray
+    Z : jnp.array
+        vector of stage approximations of x_new - z0
+    z0 : jnp.array
+        old value of x (i.e. initial value of Newton iterations)
+    f : function
+        vector field function of differential equation
+
+    Returns
+    -------
+    jnp.array
+        the resulting vector, where each element is given as f(y0 + y) for y in Y.
+    """
+    return jax.vmap(lambda z: f(z0 + z))(Z)
+    
+def calc_gamma(z0:jnp.ndarray, dm:jnp.float64, I_d:jnp.ndarray, A:jnp.ndarray, df:function):
+    """
+    calc_gamma calculates the left-hand side of the linear systems in the Newton iterations as described in Thesis at page 52
+
+    Calculates and returns the left-hand side matrix of linear system of the Newton iterations (see Thesis pp. 52, step four).
+
+    Parameters
+    ----------
+    z0 : jnp.ndarray
+        starting value of the Newton iterations (or former value of the integrated variable)
+    dm : jnp.float64
+        current time increment of the modified measure dm = sigma_0 * dt + sigma * dW
+    I_d : jnp.ndarray
+        Identity matrix of dimension (stages * d) x (stages * d)
+    A : jnp.ndarray
+        Coefficient matrix of the applied IRK method
+    df : function
+        Jacobian of the vector field function f
+
+    Returns
+    -------
+    jnp.ndarray
+        matrix of linear system solved in each step of the Newton iterations.
+    """
+    return I_d - dm * jnp.kron(A, df(z0))
+
+def G(Z:jnp.ndarray, z0:jnp.ndarray, dm:jnp.float64, A_d:jnp.ndarray, F:function):
+    """
+    G corresponds to the function on the right-hand side of the Newton iterations (Thesis pp. 52, step four).
+
+    Parameters
+    ----------
+    Z : jnp.ndarray
+        vector of stage approximations subtracted the previous timestep
+    z0 : jnp.ndarray
+        initial value of the Newton iterations, i.e. the previous timestep
+    dm : jnp.float64
+        current time increment of the modified measure dm = sigma_0 * dt + sigma * dW
+    A_d : jnp.ndarray
+        Kronecker product of A coefficient matrix and identity matrix of dimension (d x d)
+    F : function
+        see function definition of F
+
+    Returns
+    -------
+    jnp.ndarray
+        flattened array of stage approximations evaluated in G
+    """
+    return jnp.ravel(Z) - dm * jnp.dot(A_d, jnp.ravel(F(Z,z0)))
+
+def stop_criterion(dz_old:jnp.ndarray, dz_new:jnp.ndarray, k:int, eta_old:float, tol:float=1e-16, kappa:float=1e-4, u_round:float=1e-16):
+    """stop_criterion checks if an acceptable convergence for the Newton iterations is achieved.
+
+    The stop criterion is described in the Master's Thesis (pp. 52, step five).
+    
+    Parameters
+    ----------
+    dz_old : jnp.ndarray
         old solution to linear system in Newton iterations
-    dy_new : np.ndarray
+    dz_new : np.ndarray
         new solution to linear system in Newton iterations
     k : int
-        current iterate
+        current Newton iteration number
     eta_old : float
         former approximate to geometric series (unused, see reference material)
     tol : float, optional
         accepted tolerance (can be related to discretization error instead of machine precision), by default 1e-14
     kappa : float, optional
-        some constant between 1e-1 and 1e-2, by default 1e-2
+        some constant between 1e-1 and 1e-2, by default 1e-4
     u_round : float, optional
         machine precision (unused), by default 1e-16
 
@@ -174,10 +303,10 @@ def stop_criterion(dy_old:jnp.ndarray, dy_new:jnp.ndarray, k:int, eta_old:float,
         theta = jax.lax.cond(k==0, 
             lambda dy_new, dy_old: 0.5, 
             lambda dy_new, dy_old: jnp.linalg.norm(dy_new, ord=2)/jnp.linalg.norm(dy_old, ord=2), 
-            dy_new, dy_old)
+            dz_new, dz_old)
         
         eta:float = theta / (1 - theta)
-        stop =  (eta * jnp.linalg.norm(dy_new, ord=2) <= kappa * tol) # Can improve tol by more precise evaluation of discretization error
+        stop =  (eta * jnp.linalg.norm(dz_new, ord=2) <= kappa * tol) # Can improve tol by more precise evaluation of discretization error
     except ZeroDivisionError:
         stop = True
         eta = 0
@@ -188,8 +317,8 @@ def newton_cond(val):
     *_, k = val 
     return k < 10 
 
-def newton_bod(val, G:callable):
-    """Body function of Newton Iterations - this is what happens inside the Newton Iterations' while_loop."""
+def newton_bod(val, G:function):
+    """Body function of Newton Iterations - this is what happens inside newton_update's jax.lax.while_loop."""
     Y, dm, y0, dY, lu_piv, eta_old, k = val
 
     rhs = - G(Y, y0, dm)
@@ -198,59 +327,156 @@ def newton_bod(val, G:callable):
     Y += jnp.reshape(dY, jnp.shape(Y))
 
     stop, eta_old = stop_criterion(dY_old, dY, k, eta_old) # Tol set in stop criterion function
-    k = jax.lax.cond(stop, lambda k: 10, lambda k: k+1, k) #TODO: make jnp.nan and mask if reaching 10 iterations!
+    k = jax.lax.cond(stop, lambda k: 10, lambda k: k+1, k)
 
     return (Y, dm, y0, dY, lu_piv, eta_old, k)
 
-def newton_update(y0, Gamma, dm, d, stages, G:callable):
-    """Performs Newton Iterations to solve a nonlinear system connected to the IRK solver"""
-    Y = jnp.zeros((stages, d))
-    dY = jnp.zeros(d * stages) 
+def newton_update(z0:jnp.ndarray, Gamma:jnp.ndarray, dm:jnp.float64, d:int, stages:int, G:function):
+    """
+    newton_update performs Newton iterations to solve the nonlinear system of the IRK solver (procedure described in Thesis, pp. 52)
+
+    Parameters
+    ----------
+    z0 : jnp.ndarray
+        initial value of the Newton iterations (the previous timestep of the variable)
+    Gamma : jnp.ndarray
+        matrix returned by calc_gamma
+    dm : jnp.float64
+        current time increment of the modified measure dm = sigma_0 * dt + sigma * dW
+    d : int
+        number of spatial dimentions
+    stages : int
+        number of stages of the IRK method
+    G : function
+        see function definition of G
+
+    Returns
+    -------
+    Z : jnp.ndarray
+        Array of the accepted approximations from the stages of the RK method.
+    """
+    Z = jnp.zeros((stages, d))
+    dZ = jnp.zeros(d * stages) 
     eta_old = jnp.float64(1e-16)
     lu_piv = jla.lu_factor(Gamma)
     k = 0
-    val = (Y, dm, y0, dY, lu_piv, eta_old, k)
+    val = (Z, dm, z0, dZ, lu_piv, eta_old, k)
 
     cond_fun = lambda val: newton_cond(val)
     body_fun = lambda val: newton_bod(val, G=G)
 
-    # Loopeti-loop
-    Y, *_ = jax.lax.while_loop(cond_fun, body_fun, val)
-    return Y
+    Z, *_ = jax.lax.while_loop(cond_fun, body_fun, val)
+    return Z
 
 
-def one_step_method(x_old, dm, rk, calc_gamma, newt_upd, F):
-    "Calculates one-step approximation from x_old with step dm using the IRK method given by rk."
+def one_step_method(x_old:jnp.ndarray, dm:jnp.float64, rk:RK1, calc_gamma:function, newt_upd:function, F:function):
+    """
+    one_step_method calculates one-step approximation from x_old using the IRK method given by rk.
+
+    Parameters
+    ----------
+    x_old : jnp.ndarray
+        integrated variable at previous timestep
+    dm : jnp.float64
+        current time increment of the modified measure dm = sigma_0 * dt + sigma * dW
+    rk : RK1
+        class with coefficients of the IRK method
+    calc_gamma : function
+        see function definition of calc_gamma
+    newt_upd : function
+        newton update routine used in this method
+    F : function
+        see function definition of F
+
+    Returns
+    -------
+    x_new : jnp.ndarray
+        the variable approximated in the next timestep
+    """
     Gamma = calc_gamma(x_old, dm)
     Y = newt_upd(x_old, Gamma, dm)
     x_new = x_old + jnp.dot(rk.b, F(Y,  x_old)) * dm
     return x_new
 
-def map_simulations(x_batch, dm_batch, one_step:callable):
-        "Maps one_step across batch_simulations in x_batch and dm_batch."
-        return jax.vmap(one_step, in_axes=0)(x_batch, dm_batch)
+def map_simulations(x_batch:jnp.ndarray, dm_batch:jnp.ndarray, one_step:function):
+    """
+    map_simulations maps short-hand version of one_step_method across one batch of simulations
+
+    Parameters
+    ----------
+    x_batch : jnp.ndarray
+        array of simulated variables in one batch, i.e. of shape (batch_simulations, d)
+    dm_batch : jnp.ndarray
+        array of simulated modified measures in one batch, i.e. of shape (batch_simulations,)
+    one_step : function
+        short-hand version of one_step_method (see definition of one_step_method and irk_sde_solver)
+
+    Returns
+    -------
+    jnp.ndarray
+        the next timestep of the simulations in the batch
+    """
+    return jax.vmap(one_step, in_axes=0)(x_batch, dm_batch)
 
 
-def body_scan(x_old, dM_n, map_sims):
+def body_scan(x_old:jnp.ndarray, dM_n:jnp.ndarray, map_sims:function):
     x_new = map_sims(x_old, dM_n)
     return x_new, x_new
 
-def scan_time(x:jnp.float64, dM, body_scan):
+def scan_time(x:jnp.ndarray, dM:jnp.ndarray, body_scan:function):
+    """
+    scan_time integrates x numerically with one-step method (body_scan) w.r.t. time over batch simulations
+
+    Equivalent to looping over range(batch_simulations) and range(timesteps).
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        array of dimension (timesteps + 1, batch_simulations, d) with first elements equal to x0
+    dM : jnp.ndarray
+        array of simulated increments of measure dm = sigma_0 * dt + sigma * dW with shape (timesteps, batch_simulations)
+    body_scan : function
+        function doin the work in the loops.
+
+    Returns
+    -------
+    jnp.ndarray
+        integrated variable
+    """
     _, approximation = jax.lax.scan(body_scan, x[0], dM)
     x = x.at[1:].set(approximation)
     return x
 
-def scan_batch_map(x, dM, scan_time, backend):
+def scan_batch_map(x:jnp.ndarray, dM:jnp.ndarray, scan_time:function, backend:str):
+    """
+    scan_batch_map maps scan_time in parallel over batches (second axis)
+
+    Parameters
+    ----------
+    x : jnp.ndarray
+        array of dimension (timesteps + 1, batches, batch_simulations, d) with first elements equal to x0
+    dM : jnp.ndarray
+        simulated increments of measure dm = sigma_0 * dt + sigma * dW with shape (timesteps, batches, batch_simulations)
+    scan_time : function
+        see definition of scan_time
+    backend : str
+        backend used for computations (cpu, gpu, tpu)
+
+    Returns
+    -------
+    jnp.ndarray
+        computes 
+    """
     return jax.pmap(scan_time, in_axes=1, out_axes=1, backend=backend)(x, dM)
 
 
 # jaxed irk_sde_solver
 ##### ---------------------------------------------------------------------------------------------------- ######
 
-def irk_sde_solver(x0:np.array, rk:RK, f:callable, df:callable, sigma_0:float, sigma:float, dW:np.array,
+def irk_sde_solver(x0:np.ndarray, rk:RK, f:function, df:function, sigma_0:float, sigma:float, dW:np.ndarray,
         t0=0., T=1., backend='cpu'
     ):
-    """irk_sde_solver solves a Single-Integrand SDE using supplied features and rk method using jax. 
+    """irk_sde_solver solves a single-integrand SDE using supplied features and rk method using jax. 
 
     solves SDEs of the form
 
@@ -258,34 +484,34 @@ def irk_sde_solver(x0:np.array, rk:RK, f:callable, df:callable, sigma_0:float, s
     
     with stepsize, batches and number of batch simulations inferred from the supplied simulated Wiener Process dW.
 
+    Note: All the functions used internally are redefined with lambda functions to make them static, which allows for JIT-compilation.
+
     Parameters
     ----------
-    x0 : jnp.array
-        initial value of differential equation
-    rk : RK_butcher
-        Implicit Runge-Kutta one-step method used to approximate the solution. 
-    f : callable
-        Vector field of the ODE.
-    df : callable
-        Gradient of vector field f.
+    x0 : np.ndarray
+        initial value(s) of differential equation
+    rk : RK
+        IRK one-step method used to approximate the solution
+    f : function
+        vector field of the differential equation
+    df : function
+        gradient of vector field f.
     sigma_0 : float
-        Drift constant
+        drift constant
     sigma : float
-        Diffusion constant
+        diffusion constant
     dW : jnp.array
-        Simulated Wiener Process
+        simulated Wiener Process
     t0 : float, optional
-        Initial time, by default 0.
+        initial time, by default 0.
     T : float, optional
-        Terminal time, by default 1.
+        terminal time, by default 1.
     backend : str, optional
-        Computer backend on which the accelerated linear algebra is performed, by default 'cpu'
-    scan : bool, optional
-        Whether to replace numpy iterations with jax.lax.scan (might be faster, but can cause issues combined with pmap)
+        computer backend on which the computations are performed, by default 'cpu'
 
     Returns
     -------
-    np.array
+    np.ndarray
         approximated variable x of shape (timesteps + 1, batches, batch_simulations, d)
     """
     # Convert to jax.numpy.float64 DeviceArray's
@@ -303,27 +529,27 @@ def irk_sde_solver(x0:np.array, rk:RK, f:callable, df:callable, sigma_0:float, s
     x = np.zeros(x_shape)
     x[0, ..., :] = x0
     
-    stages = rk.b.shape[0] # rk.k is different for Lobatto methods and doesn't work here
+    stages = rk.b.shape[0] # rk.k differs for Lobatto and Gauss methods and doesn't work here
 
     rk = RK1(rk)
     I_d = jnp.eye(stages * d) 
     A_d = jnp.kron(rk.A, jnp.eye(d)) # Same dimension as I_m
 
     # Helper functions
-    F_local = lambda Y, y0: F(Y, y0, f=f)
+    F_local = lambda Z, z0: F(Z, z0, f=f)
     calc_gamma_local = lambda y0, dm: calc_gamma(y0, dm, I_d=I_d, A=rk.A, df=df)
-    G_local = lambda Y, y0, dm: G(Y, y0, dm, A_d=A_d, F=F_local)
+    G_local = lambda Z, z0, dm: G(Z, z0, dm, A_d=A_d, F=F_local)
 
-    # Newton update
-    newton_update_local = lambda y0, Gamma, dm: newton_update(y0, Gamma, dm, d=d, stages=stages, G=G_local)
+    # Newton update short-hand
+    newton_update_local = lambda z0, Gamma, dm: newton_update(z0, Gamma, dm, d=d, stages=stages, G=G_local)
     
-    # One step of IRK method
+    # One step of IRK method short-hand
     one_step_method_local = lambda x_old, dm: one_step_method(x_old, dm, rk=rk, calc_gamma=calc_gamma_local, newt_upd=newton_update_local, F=F_local)
 
-    # mappping over simulations
+    # mappping over simulations short-hand
     map_simulations_local = lambda x_n, dm_n: map_simulations(x_n, dm_n, one_step_method_local)
 
-    # body function of scan
+    # body function of scan short-hand
     body_scan_local = lambda x_old, dM_n: body_scan(x_old, dM_n, map_simulations_local)
 
     # scanning over time (in each batch)
@@ -336,19 +562,18 @@ def irk_sde_solver(x0:np.array, rk:RK, f:callable, df:callable, sigma_0:float, s
 ##### -------------------------------------------------------------------------------------- #####
 
 
-def stop_criterion_old(dy_old:np.ndarray, dy_new:np.ndarray, k:int, eta_old:float, tol:float=1e-14, kappa:float=1e-2, u_round:float=1e-16):
-    """stop_criterion checks if an acceptable convergence for the Newton iterations is achieved
+def stop_criterion_old(dz_old:np.ndarray, dz_new:np.ndarray, k:int, eta_old:float, tol:float=1e-14, kappa:float=1e-2, u_round:float=1e-16):
+    """stop_criterion_old checks if an acceptable convergence for the Newton iterations is achieved
 
     Follows procedure from Hairer and Wanner's "Solving ODEs II" Ch.IV.8 pp. 120-121 to calculate a stop criterion using current and former `dy`,
     as well as a method specific tolerance level `tol` similar to the local discretization error of the method,
     roundoff error of the computer `u_round`, iteration number `k`, an old temporary value `eta_old` and some constant `kappa`.
 
-
     Parameters
     ----------
-    dy_old : np.ndarray
+    dz_old : np.ndarray
         old solution to linear system in Newton iterations
-    dy_new : np.ndarray
+    dz_new : np.ndarray
         new solution to linear system in Newton iterations
     k : int
         current iterate
@@ -375,11 +600,11 @@ def stop_criterion_old(dy_old:np.ndarray, dy_new:np.ndarray, k:int, eta_old:floa
             theta = 0.5
             # eta:float = max(eta_old, u_round) ** 0.8 # Doesn't really work
         else:
-            theta = la.norm(dy_new, ord=2)/la.norm(dy_old, ord=2)
+            theta = la.norm(dz_new, ord=2)/la.norm(dz_old, ord=2)
     
         eta:float = theta / (1 - theta)
 
-        if eta * la.norm(dy_new, ord=2) <= kappa * tol: # Can improve tolerance estimate by more precise evaluation of discretization error
+        if eta * la.norm(dz_new, ord=2) <= kappa * tol: # Can improve tolerance estimate by more precise evaluation of discretization error
             stop = True
         else:
             stop = False
@@ -393,39 +618,61 @@ def stop_criterion_old(dy_old:np.ndarray, dy_new:np.ndarray, k:int, eta_old:floa
     return stop, eta
 
 
-def newton_update_old(y0:np.ndarray, G:callable, Gamma:np.ndarray, stages=None, tol:float=1e-16, print_iterations=True):
+def newton_update_old(z0:np.ndarray, G:function, Gamma:np.ndarray, stages:int=None, tol:float=1e-16):
+    """
+    newton_update_old performs Newton iterations to solve the nonlinear system of the IRK solver (procedure described in Thesis, pp. 52),
+    but uses numpy and scipy functions rather than jax.
+
+    Parameters
+    ----------
+    z0 : np.ndarray
+        initial approximation to the stage updates (i.e. x_old)
+    G : function
+        calculates the right-hand side vector of the linear system 
+    Gamma : np.ndarray
+        constant matrix on thhe right-hand side of the linear system
+    stages : int, optional
+        number of stages of the applied irk method, by default None
+    tol : float, optional
+        convergence tolerance of iterations, by default 1e-16
+
+    Returns
+    -------
+    np.ndarray
+        computed stage approximations
+    """
     # y0: (d,)-array
     # G: R^(k+1,d) -> R^m
     # Gamma: (m,m)-array
     # stages: k+1
 
-    d = y0.shape[0]
+    d = z0.shape[0]
     m = d * stages
-    Y:np.ndarray = np.zeros((stages, d))
-    dY:np.ndarray = np.zeros(m)
+    Z:np.ndarray = np.zeros((stages, d))
+    dZ:np.ndarray = np.zeros(m)
     eta_old = 1e-16
 
     lu_piv = la.lu_factor(Gamma)
 
     
     for k in range(10):
-        rhs = -G(Y)
-        dY_old:np.ndarray = dY.flatten()
-        dY = la.lu_solve(lu_piv, rhs)
-        Y += dY.reshape(stages, d) # Careful about order!
+        rhs = -G(Z)
+        dZ_old:np.ndarray = dZ.flatten()
+        dZ = la.lu_solve(lu_piv, rhs)
+        Z += dZ.reshape(stages, d) # Careful about order!
 
-        stop, eta_old = stop_criterion_old(dY_old, dY, k, eta_old, tol)
+        stop, eta_old = stop_criterion_old(dZ_old, dZ, k, eta_old, tol)
         if stop:
             break
-    return Y
+    return Z
 
-def irk_sde_solver_old(x0:np.ndarray, rk:RK, f:callable, df:callable, sigma_0:float, sigma:float, dW:np.ndarray,
+def irk_sde_solver_old(x0:np.ndarray, rk:RK, f:function, df:function, sigma_0:float, sigma:float, dW:np.ndarray,
         t0:float=0, T:float=1.,
     )->np.ndarray:
     """`irk_sde_solver_old` solves SDE problems of the form dX(t) = f(X) (dt + sigma * dW(t)) using old and slow implementation
 
-    Old and inefficient implementation of irk_sde_solver which works on windows.
-    Not parallelized, nor jitted.
+    Old and inefficient implementation of irk_sde_solver using numpy and scipy which works on Windows.
+    Not parallelized, nor JIT-compiling.
 
     Parameters
     ----------
@@ -433,9 +680,9 @@ def irk_sde_solver_old(x0:np.ndarray, rk:RK, f:callable, df:callable, sigma_0:fl
         initial value of problem
     rk : RK_butcher
         Butcher table of method used by the solver 
-    f : callable
+    f : function
         Vector field function of problem
-    df : callable
+    df : function
         Jacobian of f
     sigma_0 : float, optional
         drift constant
@@ -479,31 +726,31 @@ def irk_sde_solver_old(x0:np.ndarray, rk:RK, f:callable, df:callable, sigma_0:fl
         for s in range(batch_simulations):
             for n in range(timesteps):
 
-                y0 = x[n, b, s]
+                z0 = x[n, b, s]
                 dm = dM[n, b, s]
 
-                Gamma = np.eye(m) - dm * np.kron(rk.A, df(y0))
-                G = lambda Y: Y.ravel() - dm * np.kron(rk.A, np.eye(d)) @ F(Y, y0).ravel() # Mind the ravel order
-                Y = newton_update_old(y0, G, Gamma, stages=k, print_iterations=True)
-                x[n+1, b, s] = y0 + np.einsum(", i, ij -> j", dm, rk.b, F(Y, y0))
+                Gamma = np.eye(m) - dm * np.kron(rk.A, df(z0))
+                G = lambda Z: Z.ravel() - dm * np.kron(rk.A, np.eye(d)) @ F(Z, z0).ravel() # Mind the ravel order
+                Z = newton_update_old(z0, G, Gamma, stages=k, print_iterations=True)
+                x[n+1, b, s] = z0 + np.einsum(", i, ij -> j", dm, rk.b, F(Z, z0))
 
     return x
 
 
-
-# Jax implementation of irk_solver for ODEs using the function above
-def irk_ode_solver(x0:jnp.array, rk:RK, f:callable, df:callable,
+def irk_ode_solver(x0:jnp.array, rk:RK, f:function, df:function,
         t0=jnp.float64(0.), T=jnp.float64(1.), dt=jnp.float64(1/2**6), sigma_0=jnp.float64(1),
     ):
-    """Solves ODE of the form `x'(t) = sigma_0 * f(x)` (sigma_0 by default 1) using an arbitrary irk method
+    """Solves ODE of the form `x'(t) = sigma_0 * f(x)` (sigma_0 by default 1) using an arbitrary IRK method
     
-    Note: Uses irk_sde_solver as subroutine."""
+    Note: Ewuivalent to irk_sde_solver with sigma_0=1 and sigma=0; uses irk_sde_solver as subroutine."""
     timesteps = int((T-t0)/dt)
     dW_dummy = np.empty((timesteps, 1, 1)) # Only used to get timesteps from shape
     return irk_sde_solver(x0, rk, f, df, sigma_0=sigma_0, sigma=0, dW=dW_dummy, t0=t0, T=T)
 
-# Support functions for the symmetric solver
-def symmetric_newton_update(y0, Gamma, dt, d, G:callable):
+# -------------------------------------------------------------------------- #
+# Solver for SHS with additive noise and drift (in the end unused in Thesis)
+
+def symmetric_newton_update(y0, Gamma, dt, d, G:function):
     """Newton Update variant used by the symmetric_solver method, which has stages=1 due to the structure of the methods."""
     return jnp.squeeze(newton_update(y0, Gamma, dm=dt, d=d, stages=1, G=G))
 
@@ -522,9 +769,9 @@ def get_method_system(dt, d, f, df, method="midpoint", theta=None):
         temporal step-length (step-length in t)
     d : int
         dimension of problem
-    f : callable
+    f : function
         expression for the differential equation to be solved
-    df : callable
+    df : function
         gradient of f
     method : str
         name of method applied, either "midpoint", "kahan", "mq" or "lobatto" (Lobatto-4 type IIIA)
@@ -533,7 +780,7 @@ def get_method_system(dt, d, f, df, method="midpoint", theta=None):
 
     Returns
     -------
-    G : callable
+    G : function
         Function definition used in Newton iterations
     Gamma : np.ndarray
         Approximation to gradient of G
@@ -577,7 +824,7 @@ def get_method_system(dt, d, f, df, method="midpoint", theta=None):
 
 
 # Symmetric solver based on burrage and burrage, now jaxed.
-def symmetric_solver(x0:np.array, f:callable, df:callable,
+def symmetric_solver(x0:np.array, f:function, df:function,
         t0=0., T=1., dt= 1 / 2**6, 
         method:str="midpoint", theta=None
     ):
@@ -595,9 +842,9 @@ def symmetric_solver(x0:np.array, f:callable, df:callable,
     ----------
     x0 : np.ndarray
         initial value of variable x to be approximated
-    f : callable
+    f : function
         vector field function
-    df : callable
+    df : function
         gradient of f
     t0 : float, optional
         initial time value, by default 0.
@@ -635,7 +882,7 @@ def symmetric_solver(x0:np.array, f:callable, df:callable,
     return x
 
 def drift_solver(
-        x0:np.ndarray, f:callable, df:callable, sigma:np.ndarray, Z:np.ndarray,
+        x0:np.ndarray, f:function, df:function, sigma:np.ndarray, Z:np.ndarray,
         t0=0., T=1., 
         method:str="midpoint", theta=None, rk=None, backend='cpu'
     ):
@@ -651,9 +898,9 @@ def drift_solver(
     ----------
     x0 : jnp.ndarray
         Initial value of simulated variable
-    f : callable
+    f : function
         Vector field function of differential equation
-    df : callable
+    df : function
         Jacoubian of of f
     sigma : jnp.ndarray
         Diffusion matrix in equation of shape (d, diffusion_terms), where the first d/2 rows are zero
