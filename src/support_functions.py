@@ -1,26 +1,19 @@
 # Support functions for methods in problem_classes.py
-from distutils.command.build import build
 import os
 from time import time
 
 import numpy as np
 import pandas as pd
-import scipy.linalg as la
 import scipy.stats
 
 from local_variables import xla_flag
 # To use cpu cores in calculations:
 os.environ['XLA_FLAGS'] = xla_flag # sets number of virtual logical devices
 
-from functools import partial
-
-import jax
 import jax.numpy as jnp
-import jax.scipy.linalg as jla
-from jax import jit
 
 from rk_builder import RK
-from solver import irk_sde_solver, truncated_wiener, irk_ode_solver
+from solver import truncated_wiener, irk_ode_solver
 
 class HumanBytes:
     """Class copied from stackoverflow to get human-readable byte format
@@ -70,19 +63,56 @@ class HumanBytes:
         return HumanBytes.PRECISION_FORMATS[precision].format("-" if is_negative else "", num, unit)
 
 
-### BaseODE-related functions
+def calc_silent_max(nu:int, s:int, silent_max:int):
+    """
+    calc_silent_max calculates maximum number of silent stages used in HBVMs with s fundamental stages and allowing for maximum silent_max silent stages.
 
-def calc_silent_max(nu, s, silent_max):
-    """Calculate number of silent stages HBVM of degree 2*s to preserve polynomian Hamiltonian of order nu exactly.
-    
-    Notes:
-     - Returns minimum value of calculated number of silent stages r_max and supplied silent_max
-     - non-polynomial H (i.e. nu=None) returns silent_max"""
+    Note: For non-polynomial Hamiltonians, nu should be set to None.
+
+    Parameters
+    ----------
+    nu : int
+        polynomial degree of Hamiltonian function
+    s : int
+        number of fundamental stages
+    silent_max : int
+        maximum number of silent stages
+
+    Returns
+    -------
+    int
+        resulting maximum number of silent stages
+    """
     if nu is None: nu = np.infty
     r_max = s * (np.ceil(nu/2) - 1)
     return int(min(r_max, silent_max))
 
-def calc_exact_solution(exact, t0, T, timesteps, sigma_0, sigma=None, dW=None):
+def calc_exact_solution(exact:function, t0:np.number, T:np.number, timesteps:int, sigma_0:np.number, sigma:np.number=None, dW:np.ndarray=None):
+    """
+    calc_exact_solution calculates exact solution of differential system using the supplied exact function.
+
+    Parameters
+    ----------
+    exact : function
+        exact solution of differential equations
+    t0 : np.number
+        initial time
+    T : np.number
+        terminal time
+    timesteps : int
+        number of timesteps from initial time
+    sigma_0 : np.number
+        drift constant
+    sigma : np.number, optional
+        diffusion constant, by default None
+    dW : np.ndarray, optional
+        simulated Wiener Process increments, by default None
+
+    Returns
+    -------
+    np.ndarray
+        array of resulting solution of system at given time increments
+    """
     t = jnp.linspace(t0, T, timesteps+1)
     if dW is not None:
         W = np.zeros((timesteps+1, *dW.shape[1:]))
@@ -93,7 +123,7 @@ def calc_exact_solution(exact, t0, T, timesteps, sigma_0, sigma=None, dW=None):
 
 
 def calc_ode(self, hbvms:"list[RK]", base_max_ref:"tuple[np.number, np.number, np.number]"=None):
-    """calc__ode calculates approximated solutions using supplied hbvms, and stepsize based on base_max_ref.
+    """calc__ode calculates approximated solutions using supplied hbvms, with stepsize based on base_max_ref.
 
     Parameters
     ----------
@@ -131,8 +161,26 @@ def calc_ode(self, hbvms:"list[RK]", base_max_ref:"tuple[np.number, np.number, n
     return xs, x_exact
         
 
-def calc_hamiltonian(self, xs, x_exact, use_initial_value=True):
-    """Calculates Hamiltonian function of ODE approximations and exact hamiltonian using initial value H(x0) or x_exact."""
+def calc_hamiltonian(self, xs:"list[np.ndarray]", x_exact:np.ndarray, use_initial_value=True):
+    """
+    calc_hamiltonian calculates Hamiltonian function from ODE approximations and exact solution using initial value H(x0) or x_exact.
+
+    Note: all the approximations should have the same stepsize and number of timesteps.
+
+    Parameters
+    ----------
+    xs : list[np.ndarray]
+        numerical approximations of the problem 
+    x_exact : np.ndarray
+        "exact" or reference solution for the problem
+    use_initial_value : bool, optional
+        whether to use the initial value when calculating reference H, by default True
+
+    Returns
+    -------
+    tuple[list[np.ndarray], np.ndarray]
+        List of Hamiltonians for approximations and the reference Hamiltonian solution
+    """
     t = jnp.linspace(self.t0, self.T, len(x_exact))
     # Calculate Hamiltonian
     Hx = [self.hamiltonian(x) for x in xs]
@@ -144,9 +192,34 @@ def calc_hamiltonian(self, xs, x_exact, use_initial_value=True):
     return Hx, H_exact
 
 
-def calc_error(x, x_exact:np.ndarray, g:callable, strong:bool, global_error:bool, use_initial_value=False, x0=None):
-    """Calculate specified type of error (strong/weak and global/local) for input approximation x and exact solution x_exact."""
-    if strong:          error = jnp.linalg.norm(x_exact - x, ord=2, axis=-1) # Strong error
+def calc_error(x, x_exact:np.ndarray, g:function, strong:bool, global_error:bool, use_initial_value=False, x0=None):
+    """
+    calc_error calculate specified type of error (strong/weak and global/local) for input approximation x and exact solution x_exact
+
+    Parameters
+    ----------
+    x : np.ndarray
+        approximations to the variable 
+    x_exact : np.ndarray
+        exact/reference solution of the variable (same dimension as x) 
+    g : function
+        function used in weak sense error calculation
+    strong : bool
+        whether to calculate strong (True) or weak (False) error
+    global_error : bool
+        whether to calculate global or local error
+    use_initial_value : bool, optional
+        whether using initial value g(x0) for reference weak solution, by default False
+    x0 : np.ndarray, optional
+        initial value of x, by default None
+
+    Returns
+    -------
+    np.ndarray
+        the resulting calculated error
+    """
+    if strong: 
+        error = jnp.linalg.norm(x_exact - x, ord=2, axis=-1) # Strong error
     else:
         if use_initial_value: 
             if x0 is None: 
@@ -160,10 +233,46 @@ def calc_error(x, x_exact:np.ndarray, g:callable, strong:bool, global_error:bool
     elif global_error:          return error[-1] # np.sum(error) gives wrong result, as it is the sum of global errors after n timesteps!!
     else:                       return error[1] # np.mean(error) is the mean of global errors after n timesteps, whereas error[0] always returns 0!!
 
-def calc_convergence(self, hbvms:"list[RK]", stochastic=False, verbose=False, dW_ref=None, delete_dW_ref=False, use_initial_value=True, path=""):
-    """Calculates errors for given HBVMs using different stepsize for use in convergence plot.
+def calc_convergence(self, hbvms:"list[RK]", stochastic=False, verbose=False, dW_ref:np.ndarray=None, delete_dW_ref=False, use_initial_value=True, path=""):
+    """
+    calc_convergence calculates lists of errors for given list of HBVMs using different stepsizes for use in convergence plot.
     
-    Works both for ODEs (stochastic=False) and SDEs (stochastic=True)."""
+    The errors are computed by comparing the approximaiton generated by the HBVMs in the hbvms list for different stepsizes (dts) to a reference solution using the same simulated Wiener Process increments dW_ref.
+    If dW_ref is not supplied, it is simulated first.
+
+
+    Works both for ODEs (stochastic=False) and SDEs (stochastic=True).
+    For ODEs, the returned error_deviations is an array of None's (there is no deviation).
+    For SDEs, error_deviations is an array of the batch error deviations.
+
+    errors and error_deviations include both local and global solution error (pathwise/strong) and Hamiltonian error (distribution/weak).
+    The first dimension is for strong/weak, the second global/local, the third the method (in the same order as the hbvms list) and the fourth the stepsize (same order as dts).
+
+
+    Note: If path is supplied (i.e. path != ""), the computed errors and other features of the simulation is tored at the given path.
+
+    Parameters
+    ----------
+    hbvms : list[RK]
+        list of IRK (more specifically HBVMs) methods represented as an instance of the RK class
+    stochastic : bool, optional
+        whether to or not the problem is stochastic, by default False
+    verbose : bool, optional
+        whether to print helpful statements to terminal during run, by default False
+    dW_ref : np.ndarray, optional
+        Reference array of simulated Wiener Process increments, by default None
+    delete_dW_ref : bool, optional
+        whether to delete dW_ref during execution to save memory, by default False
+    use_initial_value : bool, optional
+        whether to use initial value in calculating invariants of the problem, by default True
+    path : str, optional
+        location at which to store the computed errors (if other than "" is supplied), by default ""
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        dts (stepsizes), errors and error_deviations of the approximations generated from 
+    """
     dt_ref, dts = self.get_dts()
     K, L = len(hbvms), len(dts)
     error_shape = [2, 2, K, L]
@@ -180,7 +289,7 @@ def calc_convergence(self, hbvms:"list[RK]", stochastic=False, verbose=False, dW
         if delete_dW_ref:
             dW_ref = None 
             self.dW = None
-        solver = lambda hbvm, dt, dW: self.sde_solver(hbvm, dt, dW=dW, verbose=verbose) # TODO: Define for AdditiveDrift
+        solver = lambda hbvm, dt, dW: self.sde_solver(hbvm, dt, dW=dW, verbose=verbose)
         error_shape +=[self.batches]
         error_deviations = np.zeros(error_shape, dtype=object) # inside if as it isn't relevant to odes
 
@@ -214,53 +323,39 @@ def calc_convergence(self, hbvms:"list[RK]", stochastic=False, verbose=False, dW
                         error, error_deviation = calc_batch_distributions(error) # mean and std in each of the batches
                         error_deviations[strong, global_error, k, l] = error_deviation
                     
-                    # TODO: move the below routine into calc_error in some way (or into calc_batch_distributions, alternatively)
                     if strong: error = np.sqrt(error) # To correct for squares in calc_error
                     else: error = np.abs(error) # To ensure positive weak error
                     errors[strong, global_error, k, l] = jnp.abs(error) # jnp.abs here ensures weak error behaves as expected
         if verbose:print(f"Finished calculating error convergence of {hbvms[k].method_name} in {time()-time0} seconds.\n")
         
     if not stochastic: error_deviations = np.full(errors.shape[:3], None)
-    if path and stochastic: self.store_computed_errors(hbvms, np.array(dts), errors, error_deviations, path=path) # Only interesting to store for stochastic calculations, as these take more than 10 seconds to compute
+    if path and stochastic: self.store_computed_errors(hbvms, np.array(dts), errors, error_deviations, path=path) # Most interesting for large stochastic simulations, which are the most time consuming
     return dts, errors, error_deviations
 
-
-
-def calc_ode_k_convergence(self, base_max_ref:"tuple[int, int, int]"=None, s_min_max:"tuple[int, int]"=None, use_initial_value=False, global_error=True):
-    # FIXME: Old code, needs to be updated to work with current repo!
-    if base_max_ref is None: base_max_ref = (self.base, self.power_max, self.power_ref)
-    if s_min_max is None: s_range = self.s_range
-    else:
-        s_min, s_max = s_min_max
-        s_range = range(s_min, s_max + 1)
-        if s_max >= self.rk_ref.s: self.rk_ref = RK(s=s_max + 1)
-        self.generate_reference(base_max_ref[::2], verbose=True)
-    silent_stages = range(self.silent_max+1) # np.arange doesn't work with param.Integer
-    
-    Q = len(self.quadratures)
-    errors = []
-    labels = []
-    quad_dict = {0:"Gauss", 3:"Lobatto"}
-    for s in s_range:
-        for i in range(Q):
-            hbvms = [RK(k=s+r, s=s, quadrature=self.quadratures[i]) for r in silent_stages]
-            xs, x_exact = self.calc_solutions(hbvms, base_max_ref)
-            Hx, H_ref = self.calc_hamiltonian(xs, x_exact, use_initial_value=use_initial_value)
-            error = np.zeros(self.silent_max + 1)
-
-            for r in silent_stages:
-                error_temp = np.abs(Hx[r] - H_ref)
-                if global_error: error[r] = np.sum(error_temp)
-                else: error[r] = np.mean(error_temp)
-    
-            errors.append(error)
-            labels.append("{}-HBVM(k, {})".format(quad_dict[self.quadratures[i]], s))
-
-    
-    return np.array(errors), labels
-
 def calc_relative_convergence(hbvms:"list[RK]", e:np.ndarray, hbvm_refs:"list[RK]", e_ref:np.ndarray):
-    """Compare Strong/Global ODE error for HBVMs with reference collocation method of same order (i.e. Gauss-2s)."""
+    """
+    calc_relative_convergence compares strong/global ODE error for HBVMs with error of reference HBVM of same order (typically Gauss-2s).
+
+    Scales the errors of HBVM(k, s) with the error of the reference HBVM(k, s) by dividing the error of HBVM(k, s) with the error of the reference.
+
+    In other words, e is scaled by e_ref.
+
+    Parameters
+    ----------
+    hbvms : list[RK]
+        list of HBVMs as instances of the RK class
+    e : np.ndarray
+        errors of the methods in hbvms
+    hbvm_refs : list[RK]
+        list of reference HBVMs as instances of the RK class
+    e_ref : np.ndarray
+        errors of the reference HBVMs
+
+    Returns
+    -------
+    np.array
+        array of scaled hbvm errors
+    """
 
     strong, global_error = 1, 1 # only interested in error in ODE/SDE, not Hamiltonian, and global behaviour (more accurate).
     errors = e[strong, global_error]
@@ -274,7 +369,7 @@ def calc_relative_convergence(hbvms:"list[RK]", e:np.ndarray, hbvm_refs:"list[RK
 
             
 def calc_convergence_order(errors:np.ndarray, base:np.number=2., order_tol=1e-14, decimals=2, increasing=True):
-    """calc_observed_order calculates observed convergence order of errors for values larger than tol
+    """calc_convergence_order calculates observed convergence order of errors for values larger than order_tol
 
     Assumes `error = O( base ** (-c * i)), i=1,2,...`
 
@@ -287,7 +382,7 @@ def calc_convergence_order(errors:np.ndarray, base:np.number=2., order_tol=1e-14
         list of errors calculated with decreasing stepsize
     base : np.number, optional
         base of the stepsize, by default 2.
-    tol : float, optional
+    order_tol : float, optional
         lowest value of errors used in order calculation, by default 1e-15
     decimals : int, optional
         number of decimals in returned order calculation, by default 2
@@ -297,7 +392,7 @@ def calc_convergence_order(errors:np.ndarray, base:np.number=2., order_tol=1e-14
     Returns
     -------
     float
-        calculated error convergence
+        calculated error convergence order
     """
     e = errors[errors > order_tol]
     if increasing: e = e[-1::-1] # in case the errors are offered for increasing stepsize (which is default for convergence functions)
@@ -307,7 +402,36 @@ def calc_convergence_order(errors:np.ndarray, base:np.number=2., order_tol=1e-14
         order:float = np.round(np.mean(np.log(e1 / e2)) / np.log(base), decimals=decimals)
     return order
 
-def calc_expected_order(hbvm:RK, stochastic, global_error, strong, nu=None, silent_max=100):
+def calc_expected_order(hbvm:RK, stochastic:bool, global_error:bool, strong:bool, nu:int=None, silent_max=100):
+    """
+    calc_expected_order calculates the expected order of the HBVM method stored in hbvm 
+
+    The expected order the HBVM(k, s) is a function of whether the
+    - error is in a global or local sense (local -> order+1)
+    - problem is stochastic (stochastc -> order/2)
+    - error is measured in the ODE/SDE (strong=True) or its Hamiltonian (strong=False)
+    - the problem has a polynomial Hamiltonian (nu is int -> Hamiltonian might be conserved, i.e. no convergence order)
+
+    Parameters
+    ----------
+    hbvm : RK
+        HBVM(k, s) stored as an instance of the RK class
+    stochastic : bool
+        whether the problem is stochastic
+    global_error : bool
+        whether the error is measured globally or locally
+    strong : bool
+        whether the error is measures
+    nu : int, optional
+        the polynomial order of the Hamiltonian of the differential equation, by default None
+    silent_max : int, optional
+        the maximum number of silent stages allowed for virtual conservation, by default 100
+
+    Returns
+    -------
+    int | np.nan
+        expected error convergence order of the hbvm
+    """
     k_conserved = hbvm.s + calc_silent_max(nu, hbvm.s, silent_max)
     conserved = hbvm.k >= k_conserved
     if strong: order:int = hbvm.s
@@ -318,8 +442,38 @@ def calc_expected_order(hbvm:RK, stochastic, global_error, strong, nu=None, sile
     if not global_error: order += 1
     return order
 
-def get_order_table(hbvms:"list[RK]", errs, stochastic, global_error, nu=None, base=2., filename="order_table", order_tol=1e-14, store_table_path=""):
+def get_order_table(hbvms:"list[RK]", errs:np.ndarray, stochastic:bool, global_error:bool, nu:int=None, base=2., filename="order_table", order_tol=1e-14, store_table_path=""):
+    """
+    get_order_table creates, returns and optionally stores a table of expected and observed error convergence orders of HBVMs in solution and Hamiltonian of the differential equation .
 
+    Note: store_table_path must be supplied for the table to be stored; it is stored as a .tex file.
+
+    Parameters
+    ----------
+    hbvms : list[RK]
+        list of HBVMs with which errs were approximated
+    errs : np.ndarray
+        list of errors resulting from approximating a single-integrand problem with the methods in hbvms
+    stochastic : bool
+        whether the problem is stochastic
+    global_error : bool
+        whether to use global or local error in the calculation of error convergence orders
+    nu : int, optional
+        the polynomial order of the Hamiltonian (if it is polynomial, otherwise None), by default None
+    base : np.number, optional
+        the base used for calculating stepsizes, by default 2.
+    filename : str, optional
+        name of the file to which the table is optionallystored, by default "order_table"
+    order_tol : np.number, optional
+        lowest value of the errors used in the error calculations of calc_convergence_order, by default 1e-14
+    store_table_path : str, optional
+        relative path to the directory in which the table is stored, by default ""
+
+    Returns
+    -------
+    pd.DataFrame
+        dataframe of the different calculated error convergence orders
+    """
     # Set up table data
     method_names = [hbvm.method_name for hbvm in hbvms]
     data = np.zeros((len(hbvms), 4))
@@ -354,10 +508,44 @@ def get_dW_list(
         batch_simulations=10**2, batches=10, seed=100, k=2, diffusion_terms=0, truncate=True
     ) -> "list[np.ndarray]":
     """
-    Get list of simulated Wiener increments built from a minimum stepsize acquired from a base (e.g.2) and a max_power(e.g.11),
-    where each additional list is a sum over base number of increments in the former.
+    get_dW_list returns list of simulated Wiener Process increments built from a minimum stepsize acquired from a base (e.g.2) and a max_power(e.g.11),
+    where the next list element is a sum over base number of increments in the current.
 
-    As of 25.05 unused due to other preferable ways to do computations.
+    Used in calculateing error convergence orders.
+
+    Note: the increment length is given by 1 / base ** power.
+
+    Parameters
+    ----------
+    dW_ref : None|np.ndarray, optional
+        reference simulated Wiener Process increments, by default None
+    t0 : int, optional
+        initial time, by default 0
+    T : int, optional
+        terminal time, by default 1
+    base : int, optional
+        base of which all the increment lengths are powers, by default 2.
+    power_max : int, optional
+        the largest power in the calculations, by default 8
+    comparisons : int, optional
+        the number of increment lengths (stepsizes) which are compared, by default 5
+    batch_simulations : int, optional
+        number of simulations in each batch, by default 10**2
+    batches : int, optional
+        number of batchs, by default 10
+    seed : int, optional
+        RNG seed used in simulations, by default 100
+    k : int, optional
+        constant in the truncation bound (related to the order of the methods used in simulations), by default 2
+    diffusion_terms : int, optional
+        number of diffusion terms (i.e. the dimension of the Wiener Process, 0 for the scalar case), by default 0
+    truncate : bool, optional
+        whether to truncate the Wiener Process increments, by default True
+
+    Returns
+    -------
+    list[np.ndarray]
+        list of simulated Wiener Process increment arrays with different time increment lengths
     """
     dt = 1 / base ** power_max
     timesteps_max = int((T-t0)/dt)
@@ -392,6 +580,23 @@ def get_dW_list(
     return dW_list
 
 def get_reference_list(self, reference_solution:np.ndarray, base_max_ref:"tuple[int, int, int]"):
+    """
+    get_reference_list returns a list of arrays of reference solutions with different time increment lengths.
+
+    Returns reference solutions with number of timesteps/increments(dts) matching get_dW_list for use in calc_convergence.
+
+    Parameters
+    ----------
+    reference_solution : np.ndarray
+        calculated reference solution with the smallest stepsizes 
+    base_max_ref : tuple[int, int, int]
+        three numbers: base of stepsizes, max power used for comparisons and reference power used in reference_solution
+
+    Returns
+    -------
+    list[np.ndarray]
+        list of arrays of reference solutions with different number of timesteps
+    """
     # Pick out only the relevant steps in time for each reference solution
     if base_max_ref is None: base, power_max, power_ref = self.base, self.power_max, self.power_ref
     else: base, power_max, power_ref = base_max_ref
@@ -405,8 +610,26 @@ def get_reference_list(self, reference_solution:np.ndarray, base_max_ref:"tuple[
     return reference_list
 
 def calc_sde(self, hbvms:"list[RK]", base_max_ref:"tuple[int]"=None, dW:"np.ndarray"=None, verbose=False)->"tuple[list[np.ndarray], np.ndarray]":
-    """Analogously to calc_ode, it calculates approximations to Single-Integrand SDEs using irk_sde_solver with supplied hbvms.
-    NOTE: calculated x's have shape (timesteps+1, batches, batch_simulations, d) instead of (timesteps+1, d)."""
+    """
+    calc_sde, analogously to calc_ode, calculates approximations to single integrand SDEs using irk_sde_solver with supplied hbvms.
+    NOTE: calculated x's have shape (timesteps+1, batches, batch_simulations, d) instead of (timesteps+1, d).
+
+    Parameters
+    ----------
+    hbvms : list[RK]
+        list of HBVMs given as instances of the RK class
+    base_max_ref : tuple[int], optional
+        base number, max power used in comparisons and power used for reference solution, by default None
+    dW : np.ndarray, optional
+        simulated Wiener Process increments, by default None
+    verbose : bool, optional
+        whether to print helpful statements to terminal, by default False
+
+    Returns
+    -------
+    tuple[list[np.ndarray], np.ndarray]
+        list of approximations corresponding to hbvms and the exact/reference solution of the same dimensions
+    """
     if not base_max_ref: base, power_max, power_ref = self.base, self.power_max, self.power_ref
     else: base, power_max, power_ref = base_max_ref
     
@@ -416,7 +639,7 @@ def calc_sde(self, hbvms:"list[RK]", base_max_ref:"tuple[int]"=None, dW:"np.ndar
     if dW is not None:
         dW_shape = dW.shape
     else:
-        # Find dW from dW_ref
+        # Get dW with right dimensions from dW_ref
         if self.dW_ref is None: self.generate_dW(base_power_ref=(base, power_ref), verbose=verbose)
         timesteps = int((self.T-self.t0)/dt)
         step = int(self.dW_ref.shape[0]/timesteps)
@@ -461,17 +684,30 @@ def calc_batch_distributions(errors:np.ndarray, strong=False):
     errors_std = errors.std(ddof=1, axis=-1) #NOTE:Redundant? maybe make warning about deviation sizes
     return errors_mean, errors_std
 
-def calc_confidence_intervals(batch_means:np.ndarray, tol=1.5, alpha=None, verbose=False):
+def calc_confidence_intervals(batch_means:np.ndarray, tol=1.5, alpha:float=None, verbose=False):
     """calculates mean and a `(1 - alpha) * 100 %` confidence interval for the last axis of `error_mean`.
     
-    If no alpha is supplied, alpha is chosen so that the error interval in the plot is reasonably large 
-     Returns:
-     --------
-     e : ndarray
-        the mean of the batch means in errors_mean
-     de : ndarray
-        the confidence interval estimate for the said mean 
-     """
+    If no alpha is supplied, alpha is chosen so that the error interval in the plot is reasonably large.
+
+    Parameters:
+    -----------
+    batch_means : np.ndarray
+        array of approximation errors averaged over batch_simulations
+    tol : float, optional
+        tolerance of confidence interval size (error of error divided by error), by default 1.5
+    alpha : float, optional
+        accuracy of confidence interval, by default None
+    verbose : bool, optional
+        whether to print helpful statements during execution, by default False
+
+    Returns:
+    --------
+    e : ndarray
+    the mean of the batch averages in errors_mean
+    de : ndarray
+    the confidence interval estimate for the said mean 
+    """
+
     # errors_mean: mean of errors in each of the batches
     batches = batch_means.shape[-1]
     e = batch_means.mean(axis=-1)
@@ -494,7 +730,21 @@ def calc_confidence_intervals(batch_means:np.ndarray, tol=1.5, alpha=None, verbo
 
 
 def build_from_string(method_name:str, return_method=True):
-    """Build HBVM from string of method_name format, i.e. Quadrature-[...](k, s)"""
+    """
+    build_from_string builds HBVM from string of method_name format, i.e. quadrature-[...](k, s)
+
+    Parameters
+    ----------
+    method_name : str
+        name of HBVM or collocation method as typically returned by hbvm.method_name
+    return_method : bool, optional
+        whether to return method as RK instance (True) or just its constants, by default True
+
+    Returns
+    -------
+    RK | tuple[int, int, int]
+        The HBVM described by method_name string as RK class instance or its defining features quadrature, k, s
+    """
     quad, rest = method_name.split(sep="-")
     rest, features = rest.split(sep="(")
     quadrature = dict(Gauss=0, Lobatto=3)[quad]
@@ -508,8 +758,9 @@ def import_simulation(filename:str, relative_path:str, verbose=True):
 
     Collects list of hbvms/rk-methods, `errors`, `error_deviations`, stepsizes `dts` and parameter dictionary `p_dict` from .npz using
 
-    `np.load(f"{relative_path}/{filename}", allow_pickle=True)`
+    `np.load(f"{relative_path}/{filename}", allow_pickle=True)`,
     
+    with the `.npz` file generated using `SingleIntegrand.store_computed_errors`.
 
     Parameters
     ----------
@@ -517,6 +768,8 @@ def import_simulation(filename:str, relative_path:str, verbose=True):
         name of file where the data is stored as compressed array (.npz file)
     relative_path : str
         the directory of the stored values relative to the current directory
+    verbose : bool, optional
+        whether to print helpful statements during execution, by default True
 
     Returns
     -------
@@ -580,26 +833,83 @@ def import_simulation(filename:str, relative_path:str, verbose=True):
     return hbvms, errors, error_deviations, dts, p_dict
 
 
-def assess_rk_ref(current, stored):
-    # Check if rk_ref of stored  satisfies necessary requirements to be used in this result generation
+def assess_rk_ref(current:dict, stored:dict):
+    """
+    assess_rk_ref checks if features of reference IRK method of stored simulation satisfies necessary requirements to be used in this result generation.
+
+    _extended_summary_
+
+    Parameters
+    ----------
+    current : dict
+        dictionary of features of rk_ref to be used in current simulation
+    stored : dict
+        dictionary of features of rk_ref which was used for stored simulation
+
+    Returns
+    -------
+    bool
+        whether or not the refence RK method is adequate
+    """
     if stored["power_ref"]      <   current["power_ref"]:   return False
     elif stored["exact"]        !=  current["exact"]:       return False
     elif stored["s"]            <   current["s"]:           return False # Only need better method
     elif stored["quadrature"]   !=  current["quadrature"]:  return False # Should be based on same quadrature, i think
     else:                                                   return True
 
-def assess_dts(current, stored):
+def assess_dts(current:np.ndarray, stored:np.ndarray):
+    """
+    assess_dts checks whether the stepsizes used for the stored simulation are compatible with the new simulation.
+
+    Parameters
+    ----------
+    current : np.ndarray
+        stepsizes to be used for current simulation
+    stored : np.ndarray
+        stepsizes used for stored simulation
+
+    Returns
+    -------
+    bool
+        whether the stepsizes of the previous simulation are adequate
+    """
     if np.min(current) < np.min(stored) or np.max(current) > np.max(stored): pass # Possibly better to adjust them
     return len(current) <= len(stored)
 
-def assess_parameters(current, stored):
-    # Check if parameters coincide sufficiently
+def assess_parameters(current:dict, stored:dict):
+    """
+    assess_parameters checks if problem features of current and stored simulations are compatible.
+
+    Parameters
+    ----------
+    current : dict
+        features of current simulations
+    stored : dict
+        features of stored simulations
+
+    Returns
+    -------
+    bool
+    """
     if (current["mu"] != stored["mu"]) or (current["sigma"] != stored["sigma"]): return False
     elif (current["t0"] < stored["t0"]) or (current["T"] > stored["T"]) or (current["base"] != stored["base"]): return False
     elif (current["seed"] != stored["seed"]) or (current["batches"] > stored["batches"]) or (current["batch_simulations"] > stored["batch_simulations"]): return False
     else: return True
 
 def assess_scale(scale:"str|list[str]"):
+    """
+    assess_scale gives list of scales for plot axes from string or list of strings
+
+    Parameters
+    ----------
+    scale : str|list[str]
+        scale of plot
+
+    Returns
+    -------
+    list[str]
+        two strings with scale of x and y axis in plot
+    """
     if isinstance(scale, str): # Split into support function
         if scale == "semilogy": scale = ["linear", "log"]
         elif scale == "semilogx": scale = ["log", "linear"]
@@ -608,7 +918,32 @@ def assess_scale(scale:"str|list[str]"):
     else: pass
     return scale
 
-def get_subplot_dicts(xs, x_ref, errs, H_errs, stochastic, invariant=None, order=1):
+def get_subplot_dicts(xs:np.ndarray, x_ref:np.ndarray, errs:np.ndarray, H_errs:np.ndarray, stochastic:bool, invariant:function=None, order:int=1):
+    """
+    get_subplot_dicts sets ups dictionaries of keyword arguments to be supplied to subplots in time_plots function
+
+    Parameters
+    ----------
+    xs : np.ndarray
+        approximations to solutions
+    x_ref : np.ndarray
+        reference solution
+    errs : np.ndarray
+        errors of approximations (usually 2-norm)
+    H_errs : np.ndarray
+        Hamiltonian errors of approximations
+    stochastic : bool
+        whether a stochastic problem or not (unused, but relevant if calculating with confidence intervals)
+    invariant : function, optional
+        first integral function if one is to be calculated, by default None
+    order : int, optional
+        order of norm to be used in calculating errors, by default 1
+
+    Returns
+    -------
+    dict
+        dictionary of dictionaries for the subplots which can be included in time_plots plots
+    """
     # set up q and p dict sizes
     d = x_ref.shape[-1]//2
     qs, q_ref = [x[...,0] for x in xs], x_ref[...,0]
@@ -640,8 +975,30 @@ def get_subplot_dicts(xs, x_ref, errs, H_errs, stochastic, invariant=None, order
     if invariant is not None: subplot_dicts["invariant"] = dict(title="Invariant error", ylabel=R"$|G(x_{{exact}}) - G(x_{{approx}})|$", ys=fints, y_exact=None, scale="semilogy")
     return subplot_dicts
 
-def update_subplot_dicts(subplot_list:list, subplot_dicts, xs, x_ref:np.ndarray, default_inputs):
-    """Returns cleaned up keys in subplot_list and complementary dicts in subplot_dicts."""
+def update_subplot_dicts(subplot_list:list, subplot_dicts:dict, xs:np.ndarray, x_ref:np.ndarray, default_inputs:list):
+    """
+    update_subplot_dicts cleans up keys in subplot_list and complementary dicts in subplot_dicts.
+
+    Removes unused/unusable keys and dictionaries from subplot_list and subplot_dicts based on imput
+
+    Parameters
+    ----------
+    subplot_list : list
+        list of subplot types to be used in time_plots
+    subplot_dicts : dict
+        dictionary of dictionaries of keyword arguments used in different subplots as set up by get_subplot_dicts
+    xs : np.ndarray
+        approximations to solutions generated by arbitrary methods
+    x_ref : np.ndarray
+        reference solution to which x's in xs are compared when errors are calculated
+    default_inputs : list
+        default types of subplots which subplot_dicts can set up
+
+    Returns
+    -------
+    tuple[list, dict]
+        cleaned up subplot_list and subplot_dicts
+    """
     
     d = x_ref.shape[-1]
     faulty_keys = []

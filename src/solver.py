@@ -742,7 +742,7 @@ def irk_ode_solver(x0:jnp.array, rk:RK, f:function, df:function,
     ):
     """Solves ODE of the form `x'(t) = sigma_0 * f(x)` (sigma_0 by default 1) using an arbitrary IRK method
     
-    Note: Ewuivalent to irk_sde_solver with sigma_0=1 and sigma=0; uses irk_sde_solver as subroutine."""
+    Note: Equivalent to irk_sde_solver with sigma_0=1 and sigma=0; uses irk_sde_solver as subroutine."""
     timesteps = int((T-t0)/dt)
     dW_dummy = np.empty((timesteps, 1, 1)) # Only used to get timesteps from shape
     return irk_sde_solver(x0, rk, f, df, sigma_0=sigma_0, sigma=0, dW=dW_dummy, t0=t0, T=T)
